@@ -1,6 +1,7 @@
 import os
-from dotenv import load_dotenv
 import logging
+from pathlib import Path
+
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse, unquote
@@ -9,10 +10,12 @@ import urllib3
 import threading
 from queue import Queue, Empty
 import concurrent.futures
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
-load_dotenv("../../../.env")
+BASE_DIR = Path(__file__).resolve().parents[2]
+load_dotenv(BASE_DIR / ".env")
 
 IGNORE_EXTENSIONS = {
     '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.webp',
@@ -22,7 +25,7 @@ IGNORE_EXTENSIONS = {
     '.css', '.js', '.json', '.xml',
 }
 
-DOWNLOAD_DIR = os.path.abspath(os.path.join(os.getcwd(), 'storage', 'pdfs'))
+DOWNLOAD_DIR = str(BASE_DIR / "storage" / "pdfs")
 
 
 class CrawlService:

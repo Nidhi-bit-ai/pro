@@ -14,6 +14,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
+from langchain_community.vectorstores.utils import filter_complex_metadata
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from pydantic import BaseModel, Field
@@ -328,7 +329,7 @@ class IndexingService:
         # Embedding model — always Google
         emb_key = embedding_google_api_key or (GOOGLE_API_KEYS[0] if GOOGLE_API_KEYS else None)
         self._embeddings = GoogleGenerativeAIEmbeddings(
-            model="models/text-embedding-004",
+            model="models/gemini-embedding-001",
             google_api_key=emb_key,
         )
 
@@ -399,15 +400,25 @@ class IndexingService:
             meta_text = "\n\n".join(p.page_content for p in pages[:3])
             metadata = extract_metadata(meta_text)
 
-            metadata["source"] = pdf_path
-            metadata["filename"] = filename
-            metadata["last_modified"] = file_mtime
-            metadata["total_pages"] = len(pages)
+            # Ensure metadata values are flat (str/int/float/bool only)
+            flat_metadata: dict = {}
+            for k, v in metadata.items():
+                if isinstance(v, (str, int, float, bool)):
+                    flat_metadata[k] = v
+                elif v is None:
+                    flat_metadata[k] = "Unknown"
+                else:
+                    flat_metadata[k] = str(v)
+
+            flat_metadata["source"] = pdf_path
+            flat_metadata["filename"] = filename
+            flat_metadata["last_modified"] = file_mtime
+            flat_metadata["total_pages"] = len(pages)
 
             # Tag every page with the document-level metadata + page number
             for i, page in enumerate(pages):
-                page.metadata.update(metadata)
-                page.metadata["page"] = i + 1
+                # Replace metadata entirely to avoid nested dicts from PyPDFLoader
+                page.metadata = {**flat_metadata, "page": i + 1}
 
             # Chunk the pages
             chunks = self._text_splitter.split_documents(pages)
@@ -415,13 +426,16 @@ class IndexingService:
             # Prepend contextual header to each chunk so the embedding captures
             # document-level info even in the middle of a long PDF.
             context_header = (
-                f"[Title: {metadata.get('title', '')} | "
-                f"Dept: {metadata.get('dept', '')} | "
-                f"Type: {metadata.get('doc_type', '')} | "
-                f"Year: {metadata.get('year', '')}]\n"
+                f"[Title: {flat_metadata.get('title', '')} | "
+                f"Dept: {flat_metadata.get('dept', '')} | "
+                f"Type: {flat_metadata.get('doc_type', '')} | "
+                f"Year: {flat_metadata.get('year', '')}]\n"
             )
             for chunk in chunks:
                 chunk.page_content = context_header + chunk.page_content
+
+            # Final safety net: strip any remaining complex metadata types
+            chunks = filter_complex_metadata(chunks)
 
             logger.info("Processed %s → %d chunks", filename, len(chunks))
             return chunks
@@ -479,7 +493,7 @@ class IndexingService:
         logger.info("Indexing %d new chunks from %d PDFs (%d unchanged, skipped)", len(all_chunks), indexed_count, skipped)
 
         if all_chunks:
-            self._vectorstore.add_documents(all_chunks)
+            self._add_documents_batched(all_chunks, batch_size=50)
             logger.info("Successfully saved %d chunks to %s", len(all_chunks), self.db_dir)
 
         return {
@@ -488,3 +502,22 @@ class IndexingService:
             "skipped_unchanged": skipped,
             "chunks_added": len(all_chunks),
         }
+
+    def _add_documents_batched(self, docs: list[Document], batch_size: int = 50, retries: int = 3):
+        """Add documents to the vector store in small batches with retry logic."""
+        total = len(docs)
+        for i in range(0, total, batch_size):
+            batch = docs[i : i + batch_size]
+            for attempt in range(1, retries + 1):
+                try:
+                    self._vectorstore.add_documents(batch)
+                    logger.info("Embedded batch %d–%d / %d", i + 1, min(i + batch_size, total), total)
+                    break
+                except Exception as e:
+                    logger.warning("Batch %d–%d failed (attempt %d/%d): %s", i + 1, min(i + batch_size, total), attempt, retries, e)
+                    if attempt < retries:
+                        time.sleep(5 * attempt)  # back off: 5s, 10s, 15s
+                    else:
+                        raise
+            # Small delay between batches to stay within rate limits
+            time.sleep(2)
