@@ -52,11 +52,38 @@ class CrawlService:
         self._visited_pages: set[str] = set()
         self._pdf_links: set[str] = set()
         self._downloaded_files: list[dict] = []  # {url, source_url, filepath}
+        self._status: str = "idle"          # idle | running | completed
+        self._current_url: str = ""         # page being scanned right now
 
         # Synchronisation primitives
         self._visited_lock = threading.Lock()
         self._pdf_lock = threading.Lock()
         self._stop_event = threading.Event()
+
+    # ------------------------------------------------------------------
+    # Progress snapshot (thread-safe)
+    # ------------------------------------------------------------------
+
+    def get_progress(self) -> dict:
+        """Return a thread-safe snapshot of current crawl progress."""
+        with self._pdf_lock:
+            pdfs_found = len(self._pdf_links)
+            downloaded = len(self._downloaded_files)
+            recent_files = [
+                f["filepath"].split("/")[-1]
+                for f in self._downloaded_files[-5:]
+            ]
+        with self._visited_lock:
+            pages_visited = len(self._visited_pages)
+        return {
+            "status": self._status,
+            "pages_visited": pages_visited,
+            "pdfs_found": pdfs_found,
+            "pdfs_downloaded": downloaded,
+            "max_downloads": self.max_downloads,
+            "recent_files": recent_files,
+            "current_url": self._current_url,
+        }
 
     # ------------------------------------------------------------------
     # URL helpers
@@ -195,6 +222,7 @@ class CrawlService:
 
                 with self._pdf_lock:
                     pdf_count = len(self._pdf_links)
+                self._current_url = current_url
                 logger.info("Scanning: %s | PDFs found: %d", current_url, pdf_count)
 
                 new_links = self._get_links_from_page(current_url, session)
@@ -226,6 +254,7 @@ class CrawlService:
         """
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         self._stop_event.clear()
+        self._status = "running"
 
         queue: Queue[str] = Queue()
         queue.put(start_url)
@@ -268,6 +297,7 @@ class CrawlService:
             concurrent.futures.wait(futures)
 
         logger.info("All threads stopped.")
+        self._status = "completed"
 
         return {
             "pages_visited": len(self._visited_pages),
