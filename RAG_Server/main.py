@@ -10,6 +10,7 @@ import logging
 from fastapi import FastAPI
 
 from src.scrapping.routes import router as scrapping_router
+from src.indexing.routes import router as indexing_router
 
 # ── Logging ──────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -25,6 +26,7 @@ app = FastAPI(
 )
 
 app.include_router(scrapping_router, prefix="/scrapping", tags=["Scrapping"])
+app.include_router(indexing_router, prefix="/indexing", tags=["Indexing"])
 
 
 @app.get("/")
