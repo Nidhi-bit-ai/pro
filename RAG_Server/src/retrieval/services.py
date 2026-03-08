@@ -561,49 +561,62 @@ Documents:
     # Public API
     # ------------------------------------------------------------------
 
-    def retrieve(self, query: str, k_fetch: int = 10, top_n: int = 5) -> dict:
+    def retrieve(self, query: str, k_fetch: int = 10, top_n: int = 5, on_progress=None) -> dict:
         """
         Full retrieval pipeline. Returns a dict:
-        {
-            "query": str,
-            "filters_applied": {...},
-            "generated_queries": [...],
-            "results": [
-                {"filepath", "filename", "title", "dept", "year", ...},
-                ...
-            ]
-        }
+        {..}
+
+        *on_progress* is an optional callable(stage: str, detail: str)
+        invoked at the start of each pipeline stage so callers (e.g. a
+        WebSocket handler) can stream live updates to clients.
         """
+        def _emit(stage: str, detail: str = ""):
+            if on_progress:
+                try:
+                    on_progress(stage, detail)
+                except Exception:
+                    pass
+
         logger.info("=== Retrieval for: '%s' ===", query)
 
         # 1. Query analysis → metadata filters
+        _emit("query_analysis", "Extracting metadata filters from query")
         logger.info("Stage 1: Query analysis")
         filters = self._analyze_query(query)
         chroma_filter = self._build_chroma_filter(filters)
         logger.info("Extracted filters: %s", filters)
+        _emit("query_analysis_done", json.dumps(filters))
 
         # 2. Multi-query generation
+        _emit("multi_query", "Generating query variants")
         logger.info("Stage 2: Multi-query generation")
         queries = self._generate_queries(query)
         logger.info("Queries: %s", queries)
+        _emit("multi_query_done", json.dumps(queries))
 
         # 3. Hybrid search (vector + BM25) with metadata pre-filter
+        _emit("hybrid_search", f"Running vector + BM25 search ({len(queries)} queries, k={k_fetch})")
         logger.info("Stage 3: Hybrid search (%d queries, k=%d)", len(queries), k_fetch)
         result_lists = self._hybrid_search(queries, k_fetch, chroma_filter)
 
         # 4. RRF fusion
+        _emit("rrf_fusion", f"Fusing {len(result_lists)} result lists")
         logger.info("Stage 4: RRF fusion over %d result lists", len(result_lists))
         fused = self._reciprocal_rank_fusion(result_lists)
         candidates = fused[: k_fetch * 2]  # keep top 2x for reranker
         logger.info("Candidates after fusion: %d", len(candidates))
+        _emit("rrf_fusion_done", f"{len(candidates)} candidates")
 
         # 5. LLM reranking
+        _emit("reranking", f"LLM reranking {len(candidates)} candidates")
         logger.info("Stage 5: LLM reranking (%d candidates)", len(candidates))
         reranked = self._rerank(query, candidates, top_n=top_n)
 
         # 6. Deduplicate by source PDF
+        _emit("deduplication", "Deduplicating by source PDF")
         pdf_results = self._deduplicate_by_source(reranked)
         logger.info("Final results: %d unique PDFs", len(pdf_results))
+        _emit("completed", f"{len(pdf_results)} unique PDFs")
 
         return {
             "query": query,

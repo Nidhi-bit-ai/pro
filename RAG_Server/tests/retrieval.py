@@ -26,9 +26,6 @@ logging.basicConfig(
 # These are generic starting points that should match common MNIT PDFs.
 # ------------------------------------------------------------------
 QUERIES = [
-    "latest notices from MNIT",
-    "CSE syllabus",
-    "examination schedule 2024",
     "what is eResource budget of library for Computer Science & Engineering department",
     "What is Third Party Information",
     "how do I log in Turnitin"
