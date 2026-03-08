@@ -345,6 +345,74 @@ class IndexingService:
             chunk_overlap=self.chunk_overlap,
         )
 
+        # ---- progress tracking state ----
+        self._status: str = "idle"           # idle | running | completed | error
+        self._total_pdfs: int = 0
+        self._pdfs_processed: int = 0
+        self._pdfs_indexed: int = 0          # actually produced new chunks
+        self._pdfs_skipped: int = 0          # unchanged, skipped
+        self._chunks_total: int = 0          # chunks waiting to be embedded
+        self._chunks_embedded: int = 0       # chunks sent to vector store so far
+        self._current_pdf: str = ""          # filename currently being processed
+        self._current_phase: str = ""        # "processing" | "embedding" | ""
+        self._recent_files: list[str] = []   # last 5 indexed filenames
+        self._progress_lock = threading.Lock()
+
+    # ---- progress & status helpers ----
+
+    def get_progress(self) -> dict:
+        """Return a thread-safe snapshot of current indexing progress."""
+        with self._progress_lock:
+            return {
+                "status": self._status,
+                "phase": self._current_phase,
+                "total_pdfs": self._total_pdfs,
+                "pdfs_processed": self._pdfs_processed,
+                "pdfs_indexed": self._pdfs_indexed,
+                "pdfs_skipped": self._pdfs_skipped,
+                "chunks_total": self._chunks_total,
+                "chunks_embedded": self._chunks_embedded,
+                "current_pdf": self._current_pdf,
+                "recent_files": list(self._recent_files[-5:]),
+            }
+
+    def get_db_status(self) -> dict:
+        """Return info about the current state of the ChromaDB collection."""
+        try:
+            collection = self._vectorstore._collection
+            count = collection.count()
+
+            # Get unique source files
+            all_meta = collection.get(include=["metadatas"])
+            metadatas = all_meta.get("metadatas", []) if all_meta else []
+            sources = set()
+            departments = set()
+            doc_types = set()
+            for m in metadatas:
+                if m.get("source"):
+                    sources.add(m["source"])
+                if m.get("dept") and m["dept"] != "Unknown":
+                    departments.add(m["dept"])
+                if m.get("doc_type") and m["doc_type"] != "Unknown":
+                    doc_types.add(m["doc_type"])
+
+            # DB file size on disk
+            db_path = Path(self.db_dir)
+            size_bytes = sum(f.stat().st_size for f in db_path.rglob("*") if f.is_file()) if db_path.exists() else 0
+
+            return {
+                "collection_name": "mnit_docs",
+                "total_chunks": count,
+                "total_documents": len(sources),
+                "departments": sorted(departments),
+                "doc_types": sorted(doc_types),
+                "db_size_mb": round(size_bytes / (1024 * 1024), 2),
+                "db_path": self.db_dir,
+            }
+        except Exception as e:
+            logger.error("Failed to get DB status: %s", e)
+            return {"error": str(e)}
+
     # ---- last-modified helpers ----
 
     def _get_indexed_mtime(self, source_path: str) -> float | None:
@@ -378,6 +446,9 @@ class IndexingService:
         """
         filename = os.path.basename(pdf_path)
         file_mtime = os.path.getmtime(pdf_path)
+
+        with self._progress_lock:
+            self._current_pdf = filename
 
         # Check if already indexed with the same mtime
         indexed_mtime = self._get_indexed_mtime(pdf_path)
@@ -466,6 +537,17 @@ class IndexingService:
         total = len(pdf_files)
         logger.info("Found %d PDFs in %s — processing with %d workers", total, self.pdf_dir, self.max_workers)
 
+        with self._progress_lock:
+            self._status = "running"
+            self._total_pdfs = total
+            self._pdfs_processed = 0
+            self._pdfs_indexed = 0
+            self._pdfs_skipped = 0
+            self._chunks_total = 0
+            self._chunks_embedded = 0
+            self._current_phase = "processing"
+            self._recent_files = []
+
         all_chunks: list[Document] = []
         indexed_count = 0
         lock = threading.Lock()
@@ -473,10 +555,17 @@ class IndexingService:
         def _worker(path: str):
             nonlocal indexed_count
             chunks = self._process_pdf(path)
-            if chunks:
-                with lock:
+            fname = os.path.basename(path)
+            with lock:
+                if chunks:
                     all_chunks.extend(chunks)
                     indexed_count += 1
+                    with self._progress_lock:
+                        self._pdfs_indexed += 1
+                        self._recent_files.append(fname)
+                else:
+                    with self._progress_lock:
+                        self._pdfs_skipped += 1
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as pool:
             futures = {pool.submit(_worker, p): p for p in pdf_files}
@@ -486,6 +575,8 @@ class IndexingService:
                 exc = fut.exception()
                 if exc:
                     logger.error("%s raised: %s", os.path.basename(futures[fut]), exc)
+                with self._progress_lock:
+                    self._pdfs_processed = done
                 if done % 5 == 0 or done == total:
                     logger.info("Progress: %d / %d PDFs processed", done, total)
 
@@ -493,8 +584,17 @@ class IndexingService:
         logger.info("Indexing %d new chunks from %d PDFs (%d unchanged, skipped)", len(all_chunks), indexed_count, skipped)
 
         if all_chunks:
+            with self._progress_lock:
+                self._current_phase = "embedding"
+                self._chunks_total = len(all_chunks)
+                self._chunks_embedded = 0
             self._add_documents_batched(all_chunks, batch_size=50)
             logger.info("Successfully saved %d chunks to %s", len(all_chunks), self.db_dir)
+
+        with self._progress_lock:
+            self._status = "completed"
+            self._current_phase = ""
+            self._current_pdf = ""
 
         return {
             "total_pdfs": total,
@@ -511,6 +611,8 @@ class IndexingService:
             for attempt in range(1, retries + 1):
                 try:
                     self._vectorstore.add_documents(batch)
+                    with self._progress_lock:
+                        self._chunks_embedded = min(i + batch_size, total)
                     logger.info("Embedded batch %d–%d / %d", i + 1, min(i + batch_size, total), total)
                     break
                 except Exception as e:
