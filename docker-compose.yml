@@ -1,0 +1,21 @@
+services:
+
+  postgres:
+    image: postgres:16
+    container_name: mnitbot-postgres
+    restart: always
+
+    environment:
+      POSTGRES_USER: mnitbot
+      POSTGRES_PASSWORD: mnitbot_password
+      POSTGRES_DB: mnitbot_db
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+
+volumes:
+  postgres_data:

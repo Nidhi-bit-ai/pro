@@ -429,6 +429,33 @@ class IndexingService:
             return results["metadatas"][0].get("last_modified")
         return None
 
+    def delete_document(
+        self,
+        stored_filename: str,
+    ) -> dict:
+        """
+        Delete all indexed chunks belonging to a document.
+        """
+
+        source_path = str(
+            (self.pdf_dir / stored_filename).resolve()
+        )
+
+        deleted = self._delete_by_source(
+            source_path,
+        )
+
+        logger.info(
+            "Deleted %d chunks for %s",
+            deleted,
+            stored_filename,
+        )
+
+        return {
+            # "stored_filename": stored_filename,
+            "chunks_deleted": deleted,
+        }
+
     def _delete_by_source(self, source_path: str) -> int:
         """Delete all chunks for a given source file. Returns count deleted."""
         existing = self._vectorstore.get(where={"source": source_path}, include=[])
@@ -438,8 +465,11 @@ class IndexingService:
         return len(ids)
 
     # ---- single-PDF processing ----
-
-    def _process_pdf(self, pdf_path: str) -> list[Document]:
+    def _process_pdf(
+        self,
+        pdf_path: str,
+        document_id: str | None = None,
+    ) -> list[Document]:
         """
         Load a PDF, extract metadata, and return chunked Documents ready for
         indexing. Returns an empty list if the file is unchanged or on error.
@@ -481,10 +511,15 @@ class IndexingService:
                 else:
                     flat_metadata[k] = str(v)
 
-            flat_metadata["source"] = pdf_path
+            flat_metadata["source"] = str(
+                Path(pdf_path).resolve()
+            )
             flat_metadata["filename"] = filename
             flat_metadata["last_modified"] = file_mtime
             flat_metadata["total_pages"] = len(pages)
+
+            if document_id is not None:
+                flat_metadata["document_id"] = document_id
 
             # Tag every page with the document-level metadata + page number
             for i, page in enumerate(pages):
@@ -515,6 +550,88 @@ class IndexingService:
             logger.error("Failed to process %s: %s", filename, e)
             return []
 
+
+    def _index_chunks(
+        self,
+        chunks: list[Document],
+    ) -> None:
+        """
+        Persist processed chunks into ChromaDB.
+        Shared by bulk indexing and single-document indexing.
+        """
+        if not chunks:
+            return
+
+        with self._progress_lock:
+            self._current_phase = "embedding"
+            self._chunks_total = len(chunks)
+            self._chunks_embedded = 0
+
+        self._add_documents_batched(
+            chunks,
+            batch_size=50,
+        )
+
+        logger.info(
+            "Successfully saved %d chunks to %s",
+            len(chunks),
+            self.db_dir,
+        )
+        
+    def index_document(
+        self,
+        pdf_path: str,
+    ) -> dict:
+        """
+        Index a single PDF document.
+        Used when a user uploads a new document.
+        """
+
+        logger.info(
+            "Indexing single document: %s",
+            pdf_path,
+        )
+
+        chunks = self._process_pdf(pdf_path)
+
+        if not chunks:
+            return {
+                "message": "No chunks created",
+                "chunks_added": 0,
+            }
+
+
+        with self._progress_lock:
+            self._status = "running"
+            self._current_phase = "embedding"
+            self._chunks_total = len(chunks)
+            self._chunks_embedded = 0
+
+
+        self._add_documents_batched(
+            chunks,
+            batch_size=50,
+        )
+
+
+        with self._progress_lock:
+            self._status = "completed"
+            self._current_phase = ""
+            self._current_pdf = ""
+
+
+        logger.info(
+            "Indexed %d chunks from %s",
+            len(chunks),
+            pdf_path,
+        )
+
+
+        return {
+            "message": "Document indexed successfully",
+            "chunks_added": len(chunks),
+        }
+    
     # ---- public entry point ----
 
     def index_all(self) -> dict:
@@ -583,14 +700,15 @@ class IndexingService:
         skipped = total - indexed_count
         logger.info("Indexing %d new chunks from %d PDFs (%d unchanged, skipped)", len(all_chunks), indexed_count, skipped)
 
-        if all_chunks:
-            with self._progress_lock:
-                self._current_phase = "embedding"
-                self._chunks_total = len(all_chunks)
-                self._chunks_embedded = 0
-            self._add_documents_batched(all_chunks, batch_size=50)
-            logger.info("Successfully saved %d chunks to %s", len(all_chunks), self.db_dir)
-
+        # if all_chunks:
+        #     with self._progress_lock:
+        #         self._current_phase = "embedding"
+        #         self._chunks_total = len(all_chunks)
+        #         self._chunks_embedded = 0
+        #     self._add_documents_batched(all_chunks, batch_size=50)
+        #     logger.info("Successfully saved %d chunks to %s", len(all_chunks), self.db_dir)
+        self._index_chunks(all_chunks)
+        
         with self._progress_lock:
             self._status = "completed"
             self._current_phase = ""
@@ -602,7 +720,8 @@ class IndexingService:
             "skipped_unchanged": skipped,
             "chunks_added": len(all_chunks),
         }
-
+        
+    
     def _add_documents_batched(self, docs: list[Document], batch_size: int = 50, retries: int = 3):
         """Add documents to the vector store in small batches with retry logic."""
         total = len(docs)

@@ -561,67 +561,211 @@ Documents:
     # Public API
     # ------------------------------------------------------------------
 
-    def retrieve(self, query: str, k_fetch: int = 10, top_n: int = 5, on_progress=None) -> dict:
+    def retrieve(
+        self,
+        query: str,
+        k_fetch: int = 10,
+        top_n: int = 5,
+        on_progress=None,
+    ) -> dict:
         """
-        Full retrieval pipeline. Returns a dict:
-        {..}
+        Full retrieval pipeline.
 
-        *on_progress* is an optional callable(stage: str, detail: str)
-        invoked at the start of each pipeline stage so callers (e.g. a
-        WebSocket handler) can stream live updates to clients.
+        Returns:
+            {
+                "query": ...,
+                "filters_applied": ...,
+                "generated_queries": ...,
+                "documents": ...,
+                "results": ...
+            }
+
+        on_progress(stage, message) is an optional callback used to
+        stream progress updates to the caller.
         """
-        def _emit(stage: str, detail: str = ""):
+
+        def emit(stage: str, message: str = ""):
             if on_progress:
                 try:
-                    on_progress(stage, detail)
+                    on_progress(stage, message)
                 except Exception:
                     pass
 
         logger.info("=== Retrieval for: '%s' ===", query)
 
-        # 1. Query analysis → metadata filters
-        _emit("query_analysis", "Extracting metadata filters from query")
+        emit(
+            "retrieval_started",
+            "Starting document retrieval...",
+        )
+
+        # --------------------------------------------------
+        # 1. Query Analysis
+        # --------------------------------------------------
+
+        emit(
+            "query_analysis_started",
+            "Understanding your question...",
+        )
+
         logger.info("Stage 1: Query analysis")
+
         filters = self._analyze_query(query)
-        chroma_filter = self._build_chroma_filter(filters)
-        logger.info("Extracted filters: %s", filters)
-        _emit("query_analysis_done", json.dumps(filters))
 
-        # 2. Multi-query generation
-        _emit("multi_query", "Generating query variants")
+        chroma_filter = self._build_chroma_filter(
+            filters,
+        )
+
+        logger.info(
+            "Extracted filters: %s",
+            filters,
+        )
+
+        emit(
+            "query_analysis_completed",
+            "Query analysis complete.",
+        )
+
+        # --------------------------------------------------
+        # 2. Multi Query Generation
+        # --------------------------------------------------
+
+        emit(
+            "multi_query_started",
+            "Expanding your search query...",
+        )
+
         logger.info("Stage 2: Multi-query generation")
-        queries = self._generate_queries(query)
-        logger.info("Queries: %s", queries)
-        _emit("multi_query_done", json.dumps(queries))
 
-        # 3. Hybrid search (vector + BM25) with metadata pre-filter
-        _emit("hybrid_search", f"Running vector + BM25 search ({len(queries)} queries, k={k_fetch})")
-        logger.info("Stage 3: Hybrid search (%d queries, k=%d)", len(queries), k_fetch)
-        result_lists = self._hybrid_search(queries, k_fetch, chroma_filter)
+        queries = self._generate_queries(
+            query,
+        )
 
-        # 4. RRF fusion
-        _emit("rrf_fusion", f"Fusing {len(result_lists)} result lists")
-        logger.info("Stage 4: RRF fusion over %d result lists", len(result_lists))
-        fused = self._reciprocal_rank_fusion(result_lists)
-        candidates = fused[: k_fetch * 2]  # keep top 2x for reranker
-        logger.info("Candidates after fusion: %d", len(candidates))
-        _emit("rrf_fusion_done", f"{len(candidates)} candidates")
+        logger.info(
+            "Queries: %s",
+            queries,
+        )
 
-        # 5. LLM reranking
-        _emit("reranking", f"LLM reranking {len(candidates)} candidates")
-        logger.info("Stage 5: LLM reranking (%d candidates)", len(candidates))
-        reranked = self._rerank(query, candidates, top_n=top_n)
+        emit(
+            "multi_query_completed",
+            f"Generated {len(queries)} search queries.",
+        )
 
-        # 6. Deduplicate by source PDF
-        _emit("deduplication", "Deduplicating by source PDF")
-        pdf_results = self._deduplicate_by_source(reranked)
-        logger.info("Final results: %d unique PDFs", len(pdf_results))
-        _emit("completed", f"{len(pdf_results)} unique PDFs")
+        # --------------------------------------------------
+        # 3. Hybrid Search
+        # --------------------------------------------------
+
+        emit(
+            "hybrid_search_started",
+            "Searching relevant documents...",
+        )
+
+        logger.info(
+            "Stage 3: Hybrid search (%d queries, k=%d)",
+            len(queries),
+            k_fetch,
+        )
+
+        result_lists = self._hybrid_search(
+            queries,
+            k_fetch,
+            chroma_filter,
+        )
+
+        emit(
+            "hybrid_search_completed",
+            "Relevant documents found.",
+        )
+
+        # --------------------------------------------------
+        # 4. Reciprocal Rank Fusion
+        # --------------------------------------------------
+
+        emit(
+            "fusion_started",
+            "Combining search results...",
+        )
+
+        logger.info(
+            "Stage 4: RRF fusion over %d result lists",
+            len(result_lists),
+        )
+
+        fused = self._reciprocal_rank_fusion(
+            result_lists,
+        )
+
+        candidates = fused[: k_fetch * 2]
+
+        logger.info(
+            "Candidates after fusion: %d",
+            len(candidates),
+        )
+
+        emit(
+            "fusion_completed",
+            f"{len(candidates)} candidate chunks selected.",
+        )
+
+        # --------------------------------------------------
+        # 5. LLM Reranking
+        # --------------------------------------------------
+
+        emit(
+            "reranking_started",
+            "Ranking the most relevant information...",
+        )
+
+        logger.info(
+            "Stage 5: LLM reranking (%d candidates)",
+            len(candidates),
+        )
+
+        reranked = self._rerank(
+            query,
+            candidates,
+            top_n=top_n,
+        )
+
+        emit(
+            "reranking_completed",
+            f"Selected top {len(reranked)} chunks.",
+        )
+
+        # --------------------------------------------------
+        # 6. Deduplication
+        # --------------------------------------------------
+
+        emit(
+            "deduplication_started",
+            "Preparing references...",
+        )
+
+        pdf_results = self._deduplicate_by_source(
+            reranked,
+        )
+
+        logger.info(
+            "Final results: %d unique PDFs",
+            len(pdf_results),
+        )
+
+        emit(
+            "deduplication_completed",
+            f"{len(pdf_results)} source documents prepared.",
+        )
+
+        emit(
+            "retrieval_completed",
+            f"Retrieved {len(reranked)} relevant chunks.",
+        )
 
         return {
             "query": query,
             "filters_applied": filters,
             "generated_queries": queries,
+            "documents": reranked,
             "results": pdf_results,
         }
+
+
 
