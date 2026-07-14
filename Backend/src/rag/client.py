@@ -3,7 +3,7 @@
 import httpx
 
 from src.config import RAG_SERVER_URL
-
+import json
 
 class RAGClient:
     """
@@ -156,6 +156,48 @@ class RAGClient:
             ) from e
             
             
+    async def stream_chat(
+        self,
+        query: str,
+    ):
+        """
+        Stream RAG events from the RAG Server.
+        """
+
+        try:
+
+            async with self.client.stream(
+                "POST",
+                "/chat/stream",
+                json={
+                    "query": query,
+                },
+            ) as response:
+
+                response.raise_for_status()
+
+                async for line in response.aiter_lines():
+
+                    if not line:
+                        continue
+
+                    yield json.loads(line)
+
+        except httpx.HTTPStatusError as e:
+
+            print("Status:", e.response.status_code)
+            print("Body:", await e.response.aread())
+
+            raise RuntimeError(
+                f"RAG stream failed: {e}"
+            ) from e
+
+        except Exception as e:
+
+            raise RuntimeError(
+                f"Unexpected streaming error: {e}"
+            ) from e
+        
     async def close(self):
         """
         Close the underlying HTTP client.

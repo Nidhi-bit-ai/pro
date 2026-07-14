@@ -1,7 +1,9 @@
 from collections import defaultdict
+from typing import Any
 
 from fastapi import WebSocket
 from pydantic import BaseModel
+
 
 class ConnectionManager:
 
@@ -11,7 +13,6 @@ class ConnectionManager:
         self.active_connections: dict[int, list[WebSocket]] = (
             defaultdict(list)
         )
-
 
     async def connect(
         self,
@@ -24,7 +25,6 @@ class ConnectionManager:
         self.active_connections[
             conversation_id
         ].append(websocket)
-
 
     def disconnect(
         self,
@@ -49,25 +49,28 @@ class ConnectionManager:
                 conversation_id
             ]
 
-
     async def send_personal_message(
         self,
-        message: BaseModel,
+        message: Any,
         websocket: WebSocket,
     ):
 
-        await websocket.send_json(
-            message.model_dump(),
-        )
+        if isinstance(message, BaseModel):
+            message = message.model_dump()
+
+        await websocket.send_json(message)
 
     async def broadcast(
         self,
         conversation_id: int,
-        message: BaseModel,
+        message: Any,
     ):
 
         if conversation_id not in self.active_connections:
             return
+
+        if isinstance(message, BaseModel):
+            message = message.model_dump()
 
         disconnected = []
 
@@ -78,7 +81,7 @@ class ConnectionManager:
             try:
 
                 await websocket.send_json(
-                    message.model_dump(),
+                    message,
                 )
 
             except Exception:

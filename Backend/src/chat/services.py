@@ -45,7 +45,7 @@ class ChatService:
                 db=db,
             )
 
-                # Save user message
+        # Save user message
         await message_repository.create(
             Message(
                 conversation_id=conversation.id,
@@ -55,15 +55,10 @@ class ChatService:
             db,
         )
 
-        print("STEP 1 - User message saved")
-
         # Call RAG Server
         rag_response = await self.rag_service.chat(
             request.message,
         )
-
-        print("STEP 2 - RAG response received")
-        print(rag_response)
 
         # Save assistant message
         await message_repository.create(
@@ -75,17 +70,69 @@ class ChatService:
             db,
         )
 
-        print("STEP 3 - Assistant message saved")
-
-        response = ChatResponse(
+        return ChatResponse(
             conversation_id=conversation.id,
             answer=rag_response["answer"],
             sources=rag_response["sources"],
         )
 
-        print("STEP 4 - Returning response")
+    async def stream_chat(
+        self,
+        request: ChatRequest,
+        user: User,
+        db: AsyncSession,
+    ):
 
-        return response
+        # Existing conversation
+        if request.conversation_id is not None:
+
+            conversation = await conversation_service.get(
+                conversation_id=request.conversation_id,
+                user=user,
+                db=db,
+            )
+
+        # New conversation
+        else:
+
+            conversation = await conversation_service.create(
+                user=user,
+                db=db,
+            )
+
+        # Save user message
+        await message_repository.create(
+            Message(
+                conversation_id=conversation.id,
+                role="user",
+                content=request.message,
+            ),
+            db,
+        )
+
+        assistant_answer = None
+
+        async for event in self.rag_service.stream_chat(
+            request.message,
+        ):
+
+            # Final response received
+            if event.get("type") == "final":
+
+                data = event["data"]
+
+                assistant_answer = data["answer"]
+
+                await message_repository.create(
+                    Message(
+                        conversation_id=conversation.id,
+                        role="assistant",
+                        content=assistant_answer,
+                    ),
+                    db,
+                )
+
+            yield event
 
 
 chat_service = ChatService()

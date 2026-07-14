@@ -41,6 +41,20 @@ class RAGService:
             raise
         
         
+    async def stream_chat(
+        self,
+        message: str,
+    ):
+        """
+        Stream chat events from the RAG Server.
+        """
+
+        async for event in self.client.stream_chat(
+            query=message,
+        ):
+            yield event
+            
+        
     async def upload_document(
         self,
         file,
@@ -87,6 +101,8 @@ class RAGService:
             stored_filename,
         )
 
+    
+            
     async def close(self):
 
         await self.client.close()

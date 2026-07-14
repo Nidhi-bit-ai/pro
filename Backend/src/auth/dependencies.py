@@ -1,26 +1,25 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from src.auth.repository import auth_repository
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database.session import get_db
 
 from src.auth.models import User
+from src.auth.repository import auth_repository
 from src.auth.utils import decode_access_token
 
 
 security = HTTPBearer()
 
 
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: AsyncSession = Depends(get_db),
-):
-
-    token = credentials.credentials
+async def get_user_from_token(
+    token: str,
+    db: AsyncSession,
+) -> User:
 
     try:
+
         user_id = decode_access_token(token)
 
     except ValueError:
@@ -43,3 +42,14 @@ async def get_current_user(
         )
 
     return user
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: AsyncSession = Depends(get_db),
+):
+
+    return await get_user_from_token(
+        credentials.credentials,
+        db,
+    )
