@@ -13,7 +13,7 @@ async def main():
 
         print(await websocket.recv())
 
-        await websocket.send("What is AskMNIT?")
+        await websocket.send("what is AIDE?")
 
         while True:
 

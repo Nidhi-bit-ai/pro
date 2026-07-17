@@ -1,0 +1,60 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap");
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--void);
+
+  color: var(--text);
+
+  font-family: "Inter", sans-serif;
+
+  overflow: hidden;
+}
+
+a {
+  color: inherit;
+
+  text-decoration: none;
+}
+
+button {
+  font-family: inherit;
+
+  background: none;
+
+  border: none;
+
+  color: inherit;
+
+  cursor: pointer;
+}
+
+input,
+textarea {
+  font-family: inherit;
+
+  color: inherit;
+
+  background: none;
+
+  border: none;
+
+  outline: none;
+}
+
+::selection {
+  background: var(--teal-dim);
+
+  color: var(--text);
+}
